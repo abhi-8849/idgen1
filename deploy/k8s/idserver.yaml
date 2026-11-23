@@ -1,0 +1,72 @@
+# This file runs the ID server: 3 copies behind one stable address. Apply with: kubectl apply -f deploy/k8s
+# Build the image first and make it available to your cluster, for example:
+#   docker build -f deploy/Dockerfile -t idserver:latest .
+# (With kind or minikube you must also load the image into the cluster.)
+# Each pod claims a different worker id from etcd, so the 3 replicas never collide.
+
+# ---- Part 1: the Deployment, which keeps 3 idserver pods running ----
+apiVersion: apps/v1
+# A Deployment keeps a set of identical pods running and replaces any that die.
+kind: Deployment
+metadata:
+  name: idserver
+spec:
+  # Run 3 identical pods.
+  replicas: 3
+  # The Deployment owns pods labelled app=idserver.
+  selector:
+    matchLabels: {app: idserver}
+  # The blueprint for each pod.
+  template:
+    metadata:
+      # Label on every pod; it must match the selector above.
+      labels: {app: idserver}
+    spec:
+      containers:
+        - name: idserver
+          # The image to run: the one we built above.
+          image: idserver:latest
+          # Use the image already on the node if present; do not try to download it from a registry.
+          imagePullPolicy: IfNotPresent
+          # Flags passed to /idserver (same meaning as in docker-compose):
+          #   -addr :8080 listen on 8080 | -allocator etcd get the worker id from etcd
+          #   -etcd etcd:2379 the etcd Service name and port | -dc 0 datacenter id 0
+          # If etcd is not ready yet the process exits and Kubernetes restarts it.
+          args: ["-addr", ":8080", "-allocator", "etcd", "-etcd", "etcd:2379", "-dc", "0"]
+          ports:
+            # Documents that the container listens on 8080.
+            - containerPort: 8080
+          # Readiness probe: Kubernetes calls GET /healthz every 5s. While it fails (HTTP 503 means the
+          # worker id lease was lost), the pod is taken out of the Service so it receives no traffic.
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 5
+          # Liveness probe: if /healthz keeps failing, Kubernetes restarts the container. The restarted
+          # server then claims a fresh worker id. It starts checking after 15s, to give startup time.
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          # requests = what the scheduler reserves for the pod; limits = the most it may use (it is throttled or killed above this).
+          # cpu 50m means 5% of one core; memory is in Mi (mebibytes).
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 64Mi}
+# Separates the two objects in this one file.
+---
+# ---- Part 2: the Service, one stable address that spreads requests over the 3 pods ----
+apiVersion: v1
+kind: Service
+metadata:
+  # Becomes the DNS name "idserver" inside the cluster.
+  name: idserver
+spec:
+  # ClusterIP means reachable only from inside the cluster. For a test from your machine use:
+  #   kubectl port-forward svc/idserver 8080:8080
+  type: ClusterIP
+  # Send traffic to pods labelled app=idserver (only the ready ones).
+  selector: {app: idserver}
+  ports:
+    # The Service listens on port 8080 and forwards to port 8080 in the pods.
+    - port: 8080
+      targetPort: 8080
