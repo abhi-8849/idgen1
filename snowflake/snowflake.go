@@ -126,3 +126,21 @@ func (g *Generator) waitUntil(ctx context.Context, ms int64) (int64, error) {
 		}
 	}
 }
+
+// Parts are the fields packed inside an ID.
+type Parts struct {
+	Time   time.Time
+	DC     uint8
+	Worker uint8
+	Seq    uint16
+}
+
+// Decode splits an ID back into its fields. It uses this generator's epoch.
+func (g *Generator) Decode(id uint64) Parts {
+	return Parts{
+		Time:   time.UnixMilli(g.epochMs + int64(id>>timeShift)).UTC(),
+		DC:     uint8(id >> dcShift & maxID),
+		Worker: uint8(id >> workerShift & maxID),
+		Seq:    uint16(id & seqMask),
+	}
+}
