@@ -2,7 +2,13 @@
 
 A small Go proof of concept of a **Unique ID Generator**: 64-bit, unique, roughly time-sortable IDs in the style of Twitter's Snowflake.
 
-> **Status:** complete proof of concept. The etcd allocator, Docker and Kubernetes files have not been run against a live etcd, Docker or cluster yet.
+> **Status:** complete proof of concept. Unit tests pass. The etcd allocator, Docker and Kubernetes files have not been run against a live etcd, Docker or cluster yet.
+
+## Contents
+
+[Why](#why) · [ID layout](#id-layout) · [Generation rules](#generation-rules) · [Project layout](#project-layout) · [Quick start](#quick-start) ·
+[Library usage](#library-usage) · [Worker ids](#worker-ids) · [HTTP service](#http-service) · [Client](#client) · [Docker](#docker) · [Kubernetes](#kubernetes) ·
+[Observability](#observability) · [Testing](#testing) · [Out of scope](#out-of-scope)
 
 ## Why
 
@@ -16,13 +22,13 @@ A small Go proof of concept of a **Unique ID Generator**: 64-bit, unique, roughl
  0 | 41 bits: ms since epoch | 5 bits: datacenter | 5 bits: worker | 12 bits: sequence
 ```
 
-| Bits | Field         | Range                                |
-|------|---------------|--------------------------------------|
-| 1    | sign          | always 0                             |
+| Bits | Field         | Range                                    |
+|------|---------------|------------------------------------------|
+| 1    | sign          | always 0                                 |
 | 41   | timestamp     | milliseconds since epoch, about 69 years |
-| 5    | datacenter id | 0–31                                 |
-| 5    | worker id     | 0–31                                 |
-| 12   | sequence      | 0–4,095 per millisecond              |
+| 5    | datacenter id | 0–31                                     |
+| 5    | worker id     | 0–31                                     |
+| 12   | sequence      | 0–4,095 per millisecond                  |
 
 ```
 id = (nowMs - epoch) << 22 | dc << 17 | worker << 12 | seq
@@ -34,7 +40,8 @@ The default epoch is `2026-01-01T00:00:00Z`. One worker can issue up to 4,096 ID
 
 1. Read the current time in milliseconds.
 2. If the worker id lease is lost, return `ErrLeaseLost`.
-3. If the clock moved backwards, wait for it to catch up when the gap is small (default 5 ms). Otherwise return `ErrClockBackwards`. An ID with an older timestamp is never issued.
+3. If the clock moved backwards, wait for it to catch up when the gap is small (default 5 ms). Otherwise return `ErrClockBackwards`.
+   An ID with an older timestamp is never issued.
 4. Same millisecond as the last ID: increment the sequence. If it wraps, wait for the next millisecond.
 5. New millisecond: reset the sequence to 0.
 6. If the timestamp no longer fits in 41 bits, return `ErrEpochExhausted`.
@@ -53,30 +60,17 @@ cmd/idserver/    server binary: flags, wiring, graceful shutdown
 deploy/          Dockerfile, docker-compose.yml, Kubernetes manifests
 ```
 
-## Worker ids
+## Quick start
 
-- **Static:** `dc` and `worker` come from flags. Use it for a single node or local runs.
-- **etcd:** each node claims `/idgen/workers/{dc}/{worker}` under a 10 s lease with a create-if-absent transaction, so nodes get different ids
-  automatically. If no keep-alive succeeds for 7 s, the node stops issuing IDs before the lease can expire and another node can take its id.
+Requires Go 1.26 or newer (see `go.mod`).
 
-## HTTP service
-
-| Endpoint                 | Description                                                         |
-|--------------------------|---------------------------------------------------------------------|
-| `GET /v1/ids?count=n`    | Returns `{"ids":["..."]}`. Default 1, max 1,000. IDs are strings (JavaScript loses precision above 2^53). See the status codes below. |
-| `GET /healthz`           | `ok`, or 503 if the lease is lost.                                  |
-| `GET /debug/vars`        | expvar counters.                                                    |
-
-Status codes for `/v1/ids`: 400 for a bad `count`, 503 for a backward clock or a lost lease.
-
-Flags: `-addr :8080`, `-dc 0`, `-worker 0`, `-allocator static|etcd`, `-etcd localhost:2379`.
-
-Counters: `ids_issued_total`, `clock_backward_total`, `refusals_total`, `seq_overflow_waits_total`.
-
-## Client
-
-`client.New(nodes).NextID(ctx)` serves IDs from a local buffer. When the buffer is empty it fetches 100 IDs from a node. On error it tries the next
-node, and returns the error if all fail.
+```sh
+go build ./... && go vet ./...
+go run ./cmd/idserver                       # static ids: -dc 0 -worker 0, listens on :8080
+curl "localhost:8080/v1/ids?count=3"        # {"ids":["...","...","..."]}
+curl localhost:8080/healthz                 # ok
+curl localhost:8080/debug/vars              # the four counters
+```
 
 ## Library usage
 
@@ -90,18 +84,29 @@ parts := gen.Decode(id) // parts.Time, parts.DC, parts.Worker, parts.Seq
 
 `Config.Lost` (closed when the worker id lease is lost) and `Config.Hooks` (counters and logs) are optional.
 
-## Run the service
+## Worker ids
 
-```sh
-go run ./cmd/idserver                       # static ids: -dc 0 -worker 0, listens on :8080
-curl "localhost:8080/v1/ids?count=3"        # {"ids":["...","...","..."]}
-curl localhost:8080/healthz                 # ok
-curl localhost:8080/debug/vars              # the four counters
-```
+- **Static:** `dc` and `worker` come from flags. Use it for a single node or local runs.
+- **etcd:** each node claims `/idgen/workers/{dc}/{worker}` under a 10 s lease with a create-if-absent transaction, so nodes get different ids
+  automatically. If no keep-alive succeeds for 7 s, the node stops issuing IDs before the lease can expire and another node can take its id.
 
-Use `-allocator etcd -etcd localhost:2379` to get the worker id from etcd instead of `-worker`.
+## HTTP service
+
+| Endpoint              | Description                                                                                          |
+|-----------------------|------------------------------------------------------------------------------------------------------|
+| `GET /v1/ids?count=n` | Returns `{"ids":["..."]}`. Default 1, max 1,000. IDs are strings (JavaScript loses precision above 2^53). |
+| `GET /healthz`        | `ok`, or 503 if the lease is lost.                                                                   |
+| `GET /debug/vars`     | expvar counters.                                                                                     |
+
+Status codes for `/v1/ids`: 400 for a bad `count`, 503 for a backward clock or a lost lease.
+
+Flags: `-addr :8080`, `-dc 0`, `-worker 0`, `-allocator static|etcd`, `-etcd localhost:2379`.
+With `-allocator etcd` the worker id comes from etcd and `-worker` is ignored.
 
 ## Client
+
+`client.New(nodes).NextID(ctx)` serves IDs from a local buffer. When the buffer is empty it fetches 100 IDs from a node.
+On error it tries the next node, and returns the error if all fail.
 
 ```go
 c := client.New([]string{"http://localhost:8081", "http://localhost:8082"})
@@ -111,7 +116,7 @@ id, err := c.NextID(ctx)
 ## Docker
 
 ```sh
-docker compose -f deploy/docker-compose.yml up --build
+docker compose -f deploy/docker-compose.yml up --build   # one etcd and two idservers
 curl localhost:8081/v1/ids; curl localhost:8082/v1/ids   # different worker bits
 ```
 
@@ -130,13 +135,13 @@ curl "localhost:8080/v1/ids?count=3"
 - **Logs** (`log/slog`): server start and stop, clock went backwards, request refused, lease lost.
 - **Health:** `/healthz` returns 503 once the lease is lost. Metrics plug in through the `snowflake.Hooks` interface, so Prometheus could replace expvar.
 
-## Build
-
-Requires Go 1.22 or newer.
+## Testing
 
 ```sh
-go build ./... && go vet ./...
+go test -race ./...
 ```
+
+Unit tests cover the generator, the HTTP server and the client. The etcd allocator and the deploy files need a real etcd, Docker or cluster, so they are not unit tested.
 
 ## Out of scope
 
