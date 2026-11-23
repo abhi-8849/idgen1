@@ -1,0 +1,28 @@
+# One etcd and two idservers. Run from the repo root: docker compose -f deploy/docker-compose.yml up --build
+# The idservers claim different worker ids from etcd, so their IDs never collide.
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.17
+    command:
+      - etcd
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+
+  idserver1:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["-addr", ":8080", "-allocator", "etcd", "-etcd", "etcd:2379", "-dc", "0"]
+    ports: ["8081:8080"]
+    depends_on: [etcd]
+    # etcd may not accept connections yet on first start; the server exits, so retry.
+    restart: on-failure
+
+  idserver2:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["-addr", ":8080", "-allocator", "etcd", "-etcd", "etcd:2379", "-dc", "0"]
+    ports: ["8082:8080"]
+    depends_on: [etcd]
+    restart: on-failure
