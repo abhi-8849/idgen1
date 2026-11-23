@@ -1,0 +1,14 @@
+# Go build output and tooling
+/idserver
+*.exe
+*.test
+*.out
+coverage.*
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+
+# Local env files
+.env
