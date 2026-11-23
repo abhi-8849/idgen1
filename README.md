@@ -2,7 +2,7 @@
 
 A small Go proof of concept of a **Unique ID Generator**: 64-bit, unique, roughly time-sortable IDs in the style of Twitter's Snowflake.
 
-> **Status:** work in progress. The package layout is in place; the generator, service, client and deployment files are being built step by step. Sections below describe the target design.
+> **Status:** complete proof of concept. The etcd allocator, Docker and Kubernetes files have not been run against a live etcd, Docker or cluster yet.
 
 ## Why
 
@@ -56,15 +56,18 @@ deploy/          Dockerfile, docker-compose.yml, Kubernetes manifests
 ## Worker ids
 
 - **Static:** `dc` and `worker` come from flags. Use it for a single node or local runs.
-- **etcd:** each node claims `/idgen/workers/{dc}/{worker}` under a 10 s lease with a create-if-absent transaction, so nodes get different ids automatically. If no keep-alive succeeds for 7 s, the node stops issuing IDs before the lease can expire and another node can take its id.
+- **etcd:** each node claims `/idgen/workers/{dc}/{worker}` under a 10 s lease with a create-if-absent transaction, so nodes get different ids
+  automatically. If no keep-alive succeeds for 7 s, the node stops issuing IDs before the lease can expire and another node can take its id.
 
 ## HTTP service
 
 | Endpoint                 | Description                                                         |
 |--------------------------|---------------------------------------------------------------------|
-| `GET /v1/ids?count=n`    | Returns `{"ids":["..."]}`. Default 1, max 1,000. IDs are strings, because JavaScript loses precision above 2^53. A bad `count` returns 400. A backward clock or lost lease returns 503. |
+| `GET /v1/ids?count=n`    | Returns `{"ids":["..."]}`. Default 1, max 1,000. IDs are strings (JavaScript loses precision above 2^53). See the status codes below. |
 | `GET /healthz`           | `ok`, or 503 if the lease is lost.                                  |
 | `GET /debug/vars`        | expvar counters.                                                    |
+
+Status codes for `/v1/ids`: 400 for a bad `count`, 503 for a backward clock or a lost lease.
 
 Flags: `-addr :8080`, `-dc 0`, `-worker 0`, `-allocator static|etcd`, `-etcd localhost:2379`.
 
@@ -72,7 +75,60 @@ Counters: `ids_issued_total`, `clock_backward_total`, `refusals_total`, `seq_ove
 
 ## Client
 
-`client.New(nodes).NextID(ctx)` serves IDs from a local buffer. When the buffer is empty it fetches 100 IDs from a node. On error it tries the next node, and returns the error if all fail.
+`client.New(nodes).NextID(ctx)` serves IDs from a local buffer. When the buffer is empty it fetches 100 IDs from a node. On error it tries the next
+node, and returns the error if all fail.
+
+## Library usage
+
+```go
+import "github.com/abhi-8849/idgen1/snowflake"
+
+gen, err := snowflake.New(snowflake.Config{DC: 1, Worker: 2}, nil) // nil clock = system clock
+id, err := gen.NextID(ctx)
+parts := gen.Decode(id) // parts.Time, parts.DC, parts.Worker, parts.Seq
+```
+
+`Config.Lost` (closed when the worker id lease is lost) and `Config.Hooks` (counters and logs) are optional.
+
+## Run the service
+
+```sh
+go run ./cmd/idserver                       # static ids: -dc 0 -worker 0, listens on :8080
+curl "localhost:8080/v1/ids?count=3"        # {"ids":["...","...","..."]}
+curl localhost:8080/healthz                 # ok
+curl localhost:8080/debug/vars              # the four counters
+```
+
+Use `-allocator etcd -etcd localhost:2379` to get the worker id from etcd instead of `-worker`.
+
+## Client
+
+```go
+c := client.New([]string{"http://localhost:8081", "http://localhost:8082"})
+id, err := c.NextID(ctx)
+```
+
+## Docker
+
+```sh
+docker compose -f deploy/docker-compose.yml up --build
+curl localhost:8081/v1/ids; curl localhost:8082/v1/ids   # different worker bits
+```
+
+## Kubernetes
+
+```sh
+docker build -f deploy/Dockerfile -t idserver:latest .   # then make the image visible to your cluster (kind/minikube: load it)
+kubectl apply -f deploy/k8s                              # etcd (single replica, POC only) + 3 idserver pods
+kubectl port-forward svc/idserver 8080:8080
+curl "localhost:8080/v1/ids?count=3"
+```
+
+## Observability
+
+- **Counters** at `/debug/vars`: `ids_issued_total`, `clock_backward_total`, `refusals_total`, `seq_overflow_waits_total`.
+- **Logs** (`log/slog`): server start and stop, clock went backwards, request refused, lease lost.
+- **Health:** `/healthz` returns 503 once the lease is lost. Metrics plug in through the `snowflake.Hooks` interface, so Prometheus could replace expvar.
 
 ## Build
 
@@ -81,8 +137,6 @@ Requires Go 1.22 or newer.
 ```sh
 go build ./... && go vet ./...
 ```
-
-Run commands for the service, Docker and Kubernetes will be added here as those parts are built.
 
 ## Out of scope
 
