@@ -20,6 +20,8 @@ const (
 	setupTime  = 5 * time.Second
 )
 
+// TODO: add an end-to-end test against a real etcd: two nodes get different worker ids, and Done closes about 7s after etcd stops.
+
 // ErrNoFreeWorker means all 32 worker ids in this datacenter are taken.
 var ErrNoFreeWorker = errors.New("etcd: no free worker id")
 

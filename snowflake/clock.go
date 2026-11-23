@@ -2,7 +2,7 @@ package snowflake
 
 import "time"
 
-// Clock is an interface so tests can later inject a fake time source.
+// Clock is an interface so tests can inject a fake time source.
 type Clock interface {
 	// NowMs returns Unix time in milliseconds.
 	NowMs() int64

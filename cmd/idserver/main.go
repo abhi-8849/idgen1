@@ -19,6 +19,7 @@ import (
 	"github.com/abhi-8849/idgen1/workerid/etcd"
 )
 
+// TODO: add tests for flag handling and shutdown, and an end-to-end check of the Docker Compose and Kubernetes deployments.
 func main() {
 	if err := run(); err != nil {
 		slog.Error("idserver failed", "err", err)

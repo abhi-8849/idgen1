@@ -1,7 +1,7 @@
 # Kubernetes manifests describe the state you want, and Kubernetes keeps the cluster in that state. Apply with:
 #   kubectl apply -f deploy/k8s
 # This file runs etcd (a small key-value store). The idservers use it to claim unique worker ids.
-# POC only: a single replica with no saved data, so it is not highly available.
+# A single replica with no saved data, so it is not highly available.
 
 # ---- Part 1: the Deployment, which keeps the etcd pod running ----
 # Which API group and version this kind of object belongs to.
@@ -12,7 +12,7 @@ metadata:
   # The name of this Deployment.
   name: etcd
 spec:
-  # How many copies (pods) to run. One, because this is a POC.
+  # How many copies (pods) to run. One, to keep it simple; with more replicas etcd would need clustering flags.
   replicas: 1
   # How the Deployment finds the pods it owns: pods carrying the label app=etcd.
   selector:

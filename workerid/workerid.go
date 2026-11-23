@@ -3,6 +3,8 @@ package workerid
 
 import "context"
 
+// TODO: add unit tests for the static allocator.
+
 // Lease is exclusive ownership of one (dc, worker) pair.
 type Lease interface {
 	DC() uint8

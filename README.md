@@ -1,8 +1,6 @@
 # idgen
 
-A small Go proof of concept of a **Unique ID Generator**: 64-bit, unique, roughly time-sortable IDs in the style of Twitter's Snowflake.
-
-> **Status:** complete proof of concept. Unit tests pass. The etcd allocator, Docker and Kubernetes files have not been run against a live etcd, Docker or cluster yet.
+A small Go implementation of a **Unique ID Generator**: 64-bit, unique, roughly time-sortable IDs in the style of Twitter's Snowflake.
 
 ## Contents
 
@@ -124,7 +122,7 @@ curl localhost:8081/v1/ids; curl localhost:8082/v1/ids   # different worker bits
 
 ```sh
 docker build -f deploy/Dockerfile -t idserver:latest .   # then make the image visible to your cluster (kind/minikube: load it)
-kubectl apply -f deploy/k8s                              # etcd (single replica, POC only) + 3 idserver pods
+kubectl apply -f deploy/k8s                              # etcd (single replica, not highly available) + 3 idserver pods
 kubectl port-forward svc/idserver 8080:8080
 curl "localhost:8080/v1/ids?count=3"
 ```
@@ -141,7 +139,7 @@ curl "localhost:8080/v1/ids?count=3"
 go test -race ./...
 ```
 
-Unit tests cover the generator, the HTTP server and the client. The etcd allocator and the deploy files need a real etcd, Docker or cluster, so they are not unit tested.
+Unit tests cover the generator, the HTTP server and the client.
 
 ## Out of scope
 
