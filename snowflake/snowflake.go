@@ -32,6 +32,9 @@ type Config struct {
 	Epoch           time.Time     // default DefaultEpoch
 	DC, Worker      uint8         // each 0-31
 	MaxBackwardWait time.Duration // default 5ms
+	// Lost is closed by the lease owner when the worker id is lost. We only read
+	// from it. Closing (not sending) signals every caller at once; nil = never lost.
+	Lost <-chan struct{}
 }
 
 // Generator issues IDs. It is safe for concurrent use.
@@ -40,7 +43,8 @@ type Generator struct {
 	epochMs int64
 	prefix  uint64 // dc and worker bits, fixed for the generator's life
 	maxWait time.Duration
-	mu      sync.Mutex // guards lastMs and seq
+	lost    <-chan struct{} // receive-only: closing it (by the lease owner) wakes every reader at once
+	mu      sync.Mutex      // guards lastMs and seq
 	lastMs  int64
 	seq     uint64
 }
@@ -64,6 +68,7 @@ func New(cfg Config, clock Clock) (*Generator, error) {
 		epochMs: cfg.Epoch.UnixMilli(),
 		prefix:  uint64(cfg.DC)<<dcShift | uint64(cfg.Worker)<<workerShift,
 		maxWait: cfg.MaxBackwardWait,
+		lost:    cfg.Lost,
 		lastMs:  -1,
 	}, nil
 }
@@ -88,6 +93,14 @@ func (g *Generator) NextID(ctx context.Context) (uint64, error) {
 // advance picks the timestamp and sequence for the next ID. The caller holds g.mu.
 func (g *Generator) advance(ctx context.Context) (int64, error) {
 	now := g.clock.NowMs()
+
+	// Without the lease another node may own this worker id, so stop issuing.
+	// Non-blocking check: we must not wait here, only peek at the channel.
+	select {
+	case <-g.lost: // closed by the lease owner: the id may now belong to another node
+		return 0, ErrLeaseLost
+	default: // still open (or nil, which never fires): the lease is held, carry on
+	}
 
 	if now < g.lastMs {
 		// Never issue an older timestamp: ride out a small step back, refuse a big one.
@@ -116,13 +129,17 @@ func (g *Generator) advance(ctx context.Context) (int64, error) {
 // waitUntil blocks until the clock reads at least ms, or ctx ends.
 func (g *Generator) waitUntil(ctx context.Context, ms int64) (int64, error) {
 	for {
+		// Re-read the clock on every pass: we poll instead of sleeping for a
+		// computed duration, so a clock that jumps is noticed straight away.
 		if now := g.clock.NowMs(); now >= ms {
 			return now, nil
 		}
 		select {
 		case <-ctx.Done():
+			// The caller gave up (timeout or cancel); stop waiting and say why.
 			return 0, ctx.Err()
 		case <-time.After(time.Millisecond):
+			// Sleep one tick, then check the clock again. 1ms is the ID time unit.
 		}
 	}
 }
