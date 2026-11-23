@@ -1,23 +1,44 @@
-# One etcd and two idservers. Run from the repo root: docker compose -f deploy/docker-compose.yml up --build
-# The idservers claim different worker ids from etcd, so their IDs never collide.
+# docker-compose describes several containers that run together. Start them from the repo root:
+#   docker compose -f deploy/docker-compose.yml up --build
+# Here: one etcd (a small key-value store) and two idservers. The idservers claim different
+# worker ids from etcd, so the IDs they generate never collide.
+
+# "services" is the list of containers to run. Each name below becomes a hostname on the shared network.
 services:
+  # etcd stores which worker ids are taken.
   etcd:
+    # Use a ready-made image from a registry; no build needed.
     image: quay.io/coreos/etcd:v3.5.17
+    # The command run inside the container (its flags):
     command:
       - etcd
+      # Accept client connections on every network interface, port 2379.
       - --listen-client-urls=http://0.0.0.0:2379
+      # The address etcd tells clients to use. "etcd" is this service's hostname on the compose network.
       - --advertise-client-urls=http://etcd:2379
 
+  # First ID server.
   idserver1:
+    # Build the image from our Dockerfile instead of pulling one.
     build:
+      # "context: .." means the repo root, because this file lives in deploy/. The Dockerfile can then see all the source code.
       context: ..
+      # Path to the Dockerfile, relative to the context.
       dockerfile: deploy/Dockerfile
+    # Flags passed to /idserver (they are added after the ENTRYPOINT):
+    #   -addr :8080          listen on port 8080 inside the container
+    #   -allocator etcd      get the worker id from etcd instead of a fixed flag
+    #   -etcd etcd:2379     where etcd is: hostname "etcd", port 2379
+    #   -dc 0                datacenter id 0
     command: ["-addr", ":8080", "-allocator", "etcd", "-etcd", "etcd:2379", "-dc", "0"]
+    # Publish a port: "host:container". Your machine's port 8081 forwards to port 8080 in the container.
     ports: ["8081:8080"]
+    # Start the etcd container before this one. It waits for etcd to start, not for it to be ready.
     depends_on: [etcd]
-    # etcd may not accept connections yet on first start; the server exits, so retry.
+    # If the process exits with an error (for example etcd was not ready yet), start it again.
     restart: on-failure
 
+  # Second ID server: identical, but on host port 8082. It will claim a different worker id from etcd.
   idserver2:
     build:
       context: ..
