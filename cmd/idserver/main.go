@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/abhi-8849/idgen1/server"
 	"github.com/abhi-8849/idgen1/snowflake"
 	"github.com/abhi-8849/idgen1/workerid"
+	"github.com/abhi-8849/idgen1/workerid/etcd"
 )
 
 func main() {
@@ -27,14 +29,20 @@ func main() {
 func run() error {
 	addr := flag.String("addr", ":8080", "listen address")
 	dc := flag.Uint("dc", 0, "datacenter id (0-31)")
-	worker := flag.Uint("worker", 0, "worker id (0-31)")
+	worker := flag.Uint("worker", 0, "worker id (0-31); only used with -allocator static")
+	kind := flag.String("allocator", "static", "worker id source: static or etcd")
+	endpoint := flag.String("etcd", "localhost:2379", "etcd endpoint; only used with -allocator etcd")
 	flag.Parse()
 
 	// ctx is cancelled by SIGINT or SIGTERM; it is our "please shut down" signal.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	lease, err := workerid.NewStatic(uint8(*dc), uint8(*worker)).Acquire(ctx)
+	alloc, err := newAllocator(*kind, *endpoint, uint8(*dc), uint8(*worker))
+	if err != nil {
+		return err
+	}
+	lease, err := alloc.Acquire(ctx)
 	if err != nil {
 		return err
 	}
@@ -47,6 +55,17 @@ func run() error {
 	}
 	srv := &http.Server{Addr: *addr, Handler: server.New(gen, lease.Done()).Handler()}
 	return serve(ctx, srv)
+}
+
+// newAllocator picks where the worker id comes from.
+func newAllocator(kind, endpoint string, dc, worker uint8) (workerid.Allocator, error) {
+	switch kind {
+	case "static":
+		return workerid.NewStatic(dc, worker), nil
+	case "etcd":
+		return etcd.New([]string{endpoint}, dc)
+	}
+	return nil, fmt.Errorf("unknown -allocator %q (want static or etcd)", kind)
 }
 
 // serve runs srv until it fails or ctx is cancelled, then drains in-flight requests.
