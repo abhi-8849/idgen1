@@ -35,7 +35,8 @@ services:
     ports: ["8081:8080"]
     # Start the etcd container before this one. It waits for etcd to start, not for it to be ready.
     depends_on: [etcd]
-    # If the process exits with an error (for example etcd was not ready yet), start it again.
+    # If the process exits with an error, start it again. That covers etcd not being ready yet on first start,
+    # and the server exiting on purpose when it loses its worker id lease (it then claims a new id on restart).
     restart: on-failure
 
   # Second ID server: identical, but on host port 8082. It will claim a different worker id from etcd.

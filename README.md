@@ -131,7 +131,8 @@ curl "localhost:8080/v1/ids?count=3"
 
 - **Counters** at `/debug/vars`: `ids_issued_total`, `clock_backward_total`, `refusals_total`, `seq_overflow_waits_total`.
 - **Logs** (`log/slog`): server start and stop, clock went backwards, request refused, lease lost.
-- **Health:** `/healthz` returns 503 once the lease is lost. Metrics plug in through the `snowflake.Hooks` interface, so Prometheus could replace expvar.
+- **Health:** `/healthz` returns 503 once the lease is lost, and the server then exits so Docker or Kubernetes restarts it with a fresh worker id.
+- **Metrics hook:** counters plug in through the `snowflake.Hooks` interface, so Prometheus could replace expvar.
 
 ## Testing
 

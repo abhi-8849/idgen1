@@ -57,22 +57,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	go logLeaseLost(ctx, lease.Done(), log)
-
 	srv := &http.Server{Addr: *addr, Handler: server.New(gen, lease.Done(), metrics, log).Handler()}
 	log.Info("server starting", "addr", *addr, "dc", lease.DC(), "worker", lease.Worker())
-	err = serve(ctx, srv)
+	err = serve(ctx, srv, lease.Done(), log)
 	log.Info("server stopped")
 	return err
-}
-
-// logLeaseLost runs in its own goroutine, started by run, and ends after logging once or when ctx ends.
-func logLeaseLost(ctx context.Context, lost <-chan struct{}, log *slog.Logger) {
-	select {
-	case <-lost: // closed by the lease owner: the worker id is gone and the generator now refuses IDs
-		log.Error("lease lost")
-	case <-ctx.Done(): // normal shutdown: Release also closes lost, but that is not a failure, so stay quiet
-	}
 }
 
 // newAllocator picks where the worker id comes from.
@@ -86,17 +75,23 @@ func newAllocator(kind, endpoint string, dc, worker uint8) (workerid.Allocator, 
 	return nil, fmt.Errorf("unknown -allocator %q (want static or etcd)", kind)
 }
 
-// serve runs srv until it fails or ctx is cancelled, then drains in-flight requests.
-func serve(ctx context.Context, srv *http.Server) error {
+// serve runs srv until it fails, ctx is cancelled or the lease is lost, then drains in-flight requests.
+// Losing the lease returns an error so the process exits non-zero and Docker or Kubernetes restarts it,
+// which makes it claim a fresh worker id. Without the exit it would stay up and return 503 forever.
+func serve(ctx context.Context, srv *http.Server, lost <-chan struct{}, log *slog.Logger) error {
 	// errCh carries ListenAndServe's result out of its goroutine. Buffered (1) so the
 	// goroutine can send and exit even if nobody is receiving any more.
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }() // started here; ends when Shutdown is called or listen fails
 
+	var exitErr error // set only when we stop because of a failure, so the process exits non-zero
 	select {
 	case err := <-errCh: // the server stopped on its own (e.g. port in use)
 		return err
 	case <-ctx.Done(): // signal received: stop accepting and drain
+	case <-lost: // closed by the lease owner: the worker id is gone and the generator refuses IDs
+		log.Error("lease lost, exiting")
+		exitErr = fmt.Errorf("worker id lease lost: %w", snowflake.ErrLeaseLost)
 	}
 
 	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -108,5 +103,5 @@ func serve(ctx context.Context, srv *http.Server) error {
 	if err := <-errCh; !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
-	return nil
+	return exitErr
 }
