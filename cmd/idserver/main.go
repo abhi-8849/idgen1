@@ -49,12 +49,29 @@ func run() error {
 	// Release on every exit path; it gets a fresh ctx because ctx is already cancelled on shutdown.
 	defer lease.Release(context.Background())
 
-	gen, err := snowflake.New(snowflake.Config{DC: lease.DC(), Worker: lease.Worker(), Lost: lease.Done()}, nil)
+	log := slog.Default()
+	metrics := server.NewMetrics(log)
+	cfg := snowflake.Config{DC: lease.DC(), Worker: lease.Worker(), Lost: lease.Done(), Hooks: metrics}
+	gen, err := snowflake.New(cfg, nil)
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Addr: *addr, Handler: server.New(gen, lease.Done()).Handler()}
-	return serve(ctx, srv)
+	go logLeaseLost(ctx, lease.Done(), log)
+
+	srv := &http.Server{Addr: *addr, Handler: server.New(gen, lease.Done(), metrics, log).Handler()}
+	log.Info("server starting", "addr", *addr, "dc", lease.DC(), "worker", lease.Worker())
+	err = serve(ctx, srv)
+	log.Info("server stopped")
+	return err
+}
+
+// logLeaseLost runs in its own goroutine, started by run, and ends after logging once or when ctx ends.
+func logLeaseLost(ctx context.Context, lost <-chan struct{}, log *slog.Logger) {
+	select {
+	case <-lost: // closed by the lease owner: the worker id is gone and the generator now refuses IDs
+		log.Error("lease lost")
+	case <-ctx.Done(): // normal shutdown: Release also closes lost, but that is not a failure, so stay quiet
+	}
 }
 
 // newAllocator picks where the worker id comes from.

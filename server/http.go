@@ -4,6 +4,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -18,11 +19,13 @@ type Server struct {
 	// lost is the lease's Done channel. We only read it: it is closed by the lease
 	// owner when the worker id is lost, which turns /healthz into a 503.
 	lost <-chan struct{}
+	vars http.Handler // serves /debug/vars
+	log  *slog.Logger
 }
 
 // New returns a Server. lost may be nil (lease can never be lost).
-func New(gen *snowflake.Generator, lost <-chan struct{}) *Server {
-	return &Server{gen: gen, lost: lost}
+func New(gen *snowflake.Generator, lost <-chan struct{}, vars http.Handler, log *slog.Logger) *Server {
+	return &Server{gen: gen, lost: lost, vars: vars, log: log}
 }
 
 // Handler returns the routes for this server.
@@ -30,6 +33,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/ids", s.handleIDs)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.Handle("GET /debug/vars", s.vars)
 	return mux
 }
 
@@ -44,7 +48,11 @@ func (s *Server) handleIDs(w http.ResponseWriter, r *http.Request) {
 	for range count {
 		id, err := s.gen.NextID(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), statusFor(err))
+			status := statusFor(err)
+			if status == http.StatusServiceUnavailable {
+				s.log.Warn("request refused", "err", err)
+			}
+			http.Error(w, err.Error(), status)
 			return
 		}
 		// Strings, because JavaScript loses precision above 2^53.
